@@ -3,7 +3,7 @@
 
 This repo contains some data science projects I've worked on in the past. Each project is stored in its own directory, which consists of a `data` subdirectory containing the data, a Jupyter Notebook containing the analysis, and any additional relevant files. The projects include:
 
-* [Instacart Basket Analysis](/instacart-basket-analysis): Explores Instacart user purchase behavior and uses customer lifetime value (CLV) and clustering models to characterize this behavior.
+* [Instacart Market Basket Analysis](/instacart-market-basket-analysis): Explores Instacart user purchase behavior and uses customer lifetime value (CLV) and clustering models to characterize this behavior.
   * We focus on understanding questions like when customers tend to place orders, what kinds of products they tend to buy (as well as what their favorites are), and how this behavior contributes to a customer's value to Instacart.
   * This was a group project that I worked on, alongside Paul Heysch and Madeleine Song. All datasets are public and available online - they were originally released by Instacart as part of a [Kaggle competition](https://www.kaggle.com/competitions/instacart-market-basket-analysis/data).
   * Technologies/libraries used: Pandas (data processing), Apache Spark (big data processing), scikit-learn (PCA, clustering, etc.), and lifetimes (CLV modeling).
