@@ -1,0 +1,477 @@
+---
+title: "Characterizing Song Popularity using the MusicOSet Dataset"
+author:
+  - Kevin Liu
+  - Jurti Telushi
+date: "2023-04-30"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: lumen
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+    number_sections: true
+  word_document:
+    toc: yes
+    toc_depth: '4'
+urlcolor: blue  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.height=4, fig.width=6, warning = F)
+if (!require("pacman")) install.packages("pacman")
+#devtools::install_github("rstudio/keras")
+#library(keras)
+#install_keras()  # a cpu based tensorflow installed 
+#pacman::p_load(randomForest, tree, ISLR, rpart, rattle, pROC, partykit, ggplot2, glmnet, leaps, dplyr, keras, neuralnet, imager, ranger, tm, Snowballc, RcolorBrewewr, wordcloud, pROC)
+pacman::p_load(dplyr, ggplot2, Hmisc, reshape2, glmnet, pROC, MLmetrics, caret, data.table, keras, randomForest, tree)
+```
+
+# Executive Summary
+
+One of the key goals in the modern music industry is to understand the factors that influence a song's popularity and underlie so-called "hit songs." In this study, we use the Spotify-based MusicOSet dataset to analyze the relationship between a song's acoustic and lyrical features and its subsequent popularity (or lack thereof). While the acoustic features are already provided in the dataset via the Spotify Web API, we perform text analysis ourselves to extract the lyrical features (i.e., frequencies of relevant words in the lyrics) for use in modeling.
+
+We examine two response variables as proxies of song "popularity": (1) `is_pop`, a binary variable based on the song's peak position and time spent on the Billboard Hot 100 (where 1 indicates a popular song), and (2) `popularity`, a Spotify-based integer variable between 0 (not popular) to 100 (popular) based on the song's number of plays, as well as their recency.
+
+First, to understand which features are significant and what relationships are present, we perform LASSO regression to select ideal subsets of features, followed by linear and logistic regression on `popularity` and `is_pop`, respectively. We find that the two sets of significantly correlated coefficients share a few similarities - for example, `year` is significant in both models - but are largely different and even inconsistent at times. For example, songs from more recent years tend to have a higher `popularity` score (since recency is emphasized) but are less likely to be considered popular under `is_pop`. In addition, most words have negative associations with the response variables, although most are not significant.
+
+We then explore various classification models and evaluate their performances in predicting `is_pop`. Besides the aforementioned logistic regression model, we also consider a feedforward neural network and a random forest model. We experience difficulties in constructing a well-trained neural network and thus removed it from consideration. In addition, the logistic regression and random forest models yield areas under the curve (AUCs) below 0.6, suggesting poor predictive performance. Ultimately, we compare these two models by evaluating their weighted misclassification errors (WMCEs), where false positives were penalized five times as much as false negatives. We find the WMCE of the logistic regression model (0.0948) to be lower than that of the random forest model (0.126), suggesting that the former may be more appropriate for this context. Despite our difficulties in constructing a strong predictive model, we still believe this project contains useful insights regarding the importance (or lack thereof) of certain acoustic and lyrical features with respect to song popularity.
+
+# Introduction
+
+## Background
+
+In 2022, the world-wide music industry was worth a whopping \$26.2 billion. By 2030, it is estimated that the industry would grow to \$50.0 billion, representing one of the fastest growing industries of the decade, with an annual average growth of 9\% per year. The upcoming decade presents a new golden era for the music industry after a two decade decline, starting in the early 90s. In fact, the music industry is responsible for the partial or full employment of up to 5 million artists, with the number to increase in the upcoming years, thus presenting a significant employment market. Yet, despite the large number of artists/singer and their output, the major revenues in the music industry are a result of small set of highly popular, and consequently highly profitable, artists and songs. 
+
+Figuring out a way to predict the popularity of a song, in advance of it coming to the popular audience, would represent a golden goose to the music industry as a whole. With advances in data science techniques and methods, we hope to be able to create a model that is capable of predicting a song's success starting from the lyrics, as well as other data about the song. 
+
+## Goal
+
+The ability to predict a song’s popularity would present a big advantage to the music industry as a whole. Thus, the goal of this project is twofold: (1) To identify and understand key trends that underlie song popularity, and (2) to construct a model for predicting song popularity. We hope to find, via analysis of song lyrics, whether there exist words/phrases which make a song more popular or otherwise. We expect that certain song features will also be significant.
+
+## Description of Data
+
+The data we use in this study comes entirely from the `MusicOSet` data set, which is a publicly available music database, containing information from over 20,000 songs, 11,000 artists, and 26,000 albums. The data set covers an extensive period of time, starting from the early 1960s to 2018.
+Much of the dataset was obtained from Spotify music data via the Spotify Web API. (More information can be found in the [MusicOSet paper](https://marianaossilva.github.io/DSW2019/assets/data/paper.pdf).)
+
+The dataset contains a variety of features for each song, including acoustic features (e.g., danceability, energy), lyrics, and other miscellaneous features (e.g., explicit vs. clean, solo vs. collaboration). A list of the non-lyrical features is provided in the table below:
+
+|Variable|Type|Description|
+|----------|--------------|--------------------------------|
+|`song_id`|character| A string of letters to identify the song|
+|`year`|numerical|Year of the song’s ranking|
+|`duration_ms`|numerical|Duration of song (in milliseconds)|
+|`key`|factor|Estimated overall of the key of the track, as an integer (or -1 if no key was detected)| 
+|`mode`|boolean|Whether the modality of the song is major (1) or minor (0)|
+|`time_signature`|factor|Estimated overall time signature of the song|
+|`acousticness`|numerical|Confidence measure from 0 (low confidence) to 1 (high confidence) of whether the song is acoustic|
+|`danceability`|numerical|Measure from 0 (least danceable) to 1 (most danceable) of how suitable the song is for dancing|
+|`energy`|numerical|Perceptual measure from 0 to 1 of the song’s intensity/activity|
+|`instrumentalness`|numerical|Measure from 0 (unlikely) to 1 (likely) of how likely the song contains no vocals|
+|`liveness`|numerical|Measure from 0 (unlikely) to 1 (likely) of how likely the recording was performed in front of an audience|
+|`loudness`|numerical|Overall loudness of song (in decibels)|
+|`speechiness`|numerical|Measure from 0 to 1 of how speech-like (i.e., presence of spoken words) the song is|
+|`valence`|numerical|Measure from 0 (negative) to 1 (positive) of how musically positive a song is|
+|`tempo`|numerical|Estimated tempo of a track (in beats per minute)|
+|`explicit`|boolean|Whether the song contains explicit lyrics (1) or not (or unknown) (0)|
+|`song_type`|factor|Whether the song was a collaboration or only involved one artist (solo)|
+
+Also contained in the data are two response variables that we will explore:
+
+1. The primary option we will consider is MusicOSet’s `is_pop` variable, which is a binary variable. This variable was derived from a continuous score based on the song’s year-end peak position on the Billboard Hot 200 and the song’s number of weeks spent on that board.
+2. As a secondary option, we also consider Spotify’s song `popularity` score, which is an integer variable from 0 to 100. This score is determined via an algorithm based on the number of plays for the song, as well as the recency of those plays. Songs played more frequently and more recently tend to have a higher score. (Unlike `is_pop`, this variable is continuous, so we can perform regression analysis on it.)
+
+# Data Analysis
+
+## Data Cleaning
+
+While the data for this project ultimately came from the same source, the relevant variables described in the previous sections were located in different files in the data set. In the end, we combined data from three different files, `songs.csv`, which contained some meta data regarding the songs (such as `song_name`, `popularity`, `explicit`, and `song_type`); `acoustic_features.csv`, which as the name suggests contains data regarding the acoustic features (such as  `key`, `duration`, `time_signature`, `danceability`, etc.); and `lyrics.csv`, which contained song lyrics, which we present as numerical variables by their frequencies. To prepare the data for this project we combined all the data in one master data table, with all the relevant variables, as presented above. Moreover, we decided to drop some variables which we did not think were useful to our analysis, such as song name, artist and album name amongst a few others. All the data were joined by the `song_id`, which is included in the final data set, though not used in any of our analyses. Furthermore, we changed the data types of some variables, such as `song_id`, from a string of `True` or `False`, to a numerical variable of `1` or `0`. In the end, our data set contained 21,007 different songs, and 522 different variables, including word frequencies, as described below. 
+
+## Text Analysis
+
+Though for each song we were presented the corresponding lyrics, to make the lyrics data easier to use as features in our models, we first extracted their corresponding word frequencies. To do so we first process the data by removing line breaks, as well as punctuation such as backslashes which were present in how the data was formatted. We then remove those songs whose lyrics are not present, which represented only a small fraction of the total songs. To process the resulting lyric data we then further remove special characters, such as punctuation and numbers, and convert alphabetic characters to lowercase. Furthermore, we remove common English stop words, such as with or I, and remove extraneous characters that are not the stem of the word.
+
+From this processed data, we create a document-term matrix of word frequencies in each song, and we keep only those words that appear in at least 5% of songs. The reason for such a large cutoff was to make the data more manageable for our analysis. We ultimately obtain frequencies for about 500 words (including some explicit ones), which we use as text features in our models.
+
+## Exploratory Data Analysis
+```{r, read song_data, echo=FALSE}
+df <- fread("song_data3.csv")
+```
+
+### Non Lyrical Features
+First, we explore the distributions of the non-lyrical features. The following graphs shows the histograms for numeric values in our data set:
+
+```{r, histogram and boxplot, echo=FALSE}
+names_hist <- c('popularity', 'duration_ms', 'acousticness', 'danceability', 'energy', 'instrumentalness', 'liveness', 'loudness', 'speechiness', 'valence', 'tempo', 'year')
+names_bar <- c('is_pop', 'explicit', 'song_type', 'key', 'mode', 'time_signature')
+
+par(mar = c(5, 4, 1.5, 1), mfrow = c(4,3))
+df_sub <- df %>% select(all_of(names_hist))
+hist.data.frame(df_sub, na.big = FALSE)
+#summary(df_sub)
+```
+
+From these graphs, we can see that the numerical variables are either unimodal (e.g., `duration_ms`, `danceability`) or concentrated at lower values (e.g., `speechiness`, `instrumentalness`). In particular, the `duration_ms` variable seems to be uniformly distributed about the value $200,000$ ms, which makes sense as that translates to $\approx 3.3$ minutes, which is a normal song length. Moreover, we see that the number of songs represented in this data set by year seems to be roughly constant, with a slight decrease over time, which is to be expected. 
+
+To increase the variability in the `instrumentalness` and `speechiness` variables and thus make them more useful for the purposes of our analyses, we decide to take a log of each variable, which yields the following distributions (with `instrumentalness` at top and `speechiness` at bottom):
+
+```{r, change instrumentalness and speechiness and plot, echo=FALSE}
+df$instrumentalness <- log(df$instrumentalness)
+
+df$speechiness <- log(df$speechiness)
+df$speechiness[is.infinite(df$speechiness)] <- -4.0
+
+par(mar = c(3, 4, 0, 0), mfrow = c(2,1))
+df_instr <- df %>% select(all_of(c("instrumentalness", "speechiness")))
+hist.data.frame(df_instr, na.big = FALSE)
+
+df$instrumentalness[is.infinite(df$instrumentalness)] <- -14.0
+```
+
+From these graphs, we see that while the `speechiness` variable is still somewhat left skewed, the variable `instrumentalness` seems to be roughly uniform. We note that the log transformation of `instrumentalness` above disregards the values for which the old `instrumentalness` variable was equal to $0$, and hence a log transformation could not be taken. For the purposes of this project we set the `instrumentalness` variable of such songs to $-14.0$, which is smaller than the `instrumentalness` variable in the songs in which the log transformation can be taken.
+
+We now present bar plots of our categorical variables:
+
+```{r, make bar plots, echo=FALSE}
+vc <- lapply(df %>% select(all_of(names_bar)), table)
+par(mar=c(5,4,1,2), mfrow = c(2,3))
+
+for (name in names(vc)) {
+  barplot(unlist(vc[name]), xlab = name)
+}
+```
+
+From these bar plots we see that the data set contains more unpopular than popular songs, with about $60.3\%$ (or 14125) songs being unpopular and $39.7\%$ (or 9294) of songs being popular. Moreover, we further see that the vast majority of songs are not explicit and most are performed solo rather than collaborations. While the song `key` seems to be uniformly distributed across all keys, it is clear that the `time_signature` is concentrated on a single value. 
+
+```{r, echo=FALSE, message=FALSE, eval = FALSE}
+df_sub <- df %>% select(all_of(names_hist))
+meltData <- melt(as.data.frame(scale(df_sub)))
+par(las = 1)
+par(mar = c(5, 8, 1, 2))
+boxplot(data = meltData, value~variable, horizontal = T, xlab = 'z-score', ylab = '')
+```
+
+To explore the relationships between pairs of numerical variables, we examine the correlation heatmap:
+
+```{r, correlation, echo = FALSE, fig.pos="H"}
+cormat <- cor(df %>% select(all_of(names_hist)))
+ggplot(data = melt(cormat), aes(x = Var1, y = Var2, fill = value)) + geom_tile() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+From this graph, we can see that most pairs exhibit little or no correlation. There are some exceptions - for example, `energy` and `acousticness` are moderately negatively correlated. Notably, `popularity` is not greatly correlated with any other variable.
+
+Finally, recall that we consider two measure of song popularity): `is_pop` (based on the song’s chart position) and `popularity` (based on the song’s number of plays and their recency). We hypothesize that these two variables are correlated but not identical, and we can explore this idea by considering the distribution of `popularity` based on `is_pop`:
+
+```{r,plot is_pop, message=FALSE, echo=FALSE}
+df$is_pop <- as.factor(df$is_pop)
+ggplot(df, aes(x=popularity, fill=is_pop)) +
+  geom_histogram(position = 'dodge')
+```
+
+We see that there is some relationship between the two variables, since songs with `is_pop = True` tend to correspond to higher `popularity` scores. Conversely, songs with the highest `popularity` scores are more likely to have `is_pop = True`. Furthermore, it seems that when popularity reaches a score of $>50$ then the probability that a song is popular is more likely than not. 
+
+### Lyrical Features
+
+Here we present the bar plots of the 30 least common words in our data set, as well as the 30 most common words, though given that we choose a threshold of $5\%$, means that all words presented are at least relatively common in all songs:
+
+```{r, get word features subdata, echo = FALSE, message=FALSE}
+word_freq <- df[,c(21:524)] 
+#word_freq_sum <- colSums(Filter(is.numeric, word_freq))
+sumdata=data.frame(value=apply(word_freq,2,sum))
+sumdata$word=rownames(sumdata)
+sumdata <- sumdata %>% arrange(value)
+head <- head(sumdata, 30)
+tail <- tail(sumdata, 30)
+ggplot(head, aes(x=reorder(word, +value), y=value, fill=word)) +
+geom_bar(colour="black", stat="identity") + 
+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+labs(
+  title = "Frequency of least used words",
+  y = "Frequency", x = "Words"
+)
+
+ggplot(tail, aes(x=reorder(word, +value), y=value, fill=word)) +
+geom_bar(colour="black", stat="identity")+ 
+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+labs(
+  title = "Frequency of most used words",
+  y = "Frequency", x = "Words"
+)
+#geom_bar(colour="black", stat="identity")
+```
+
+As can be seen from the graph above short one-syllable words such as `say`, `like` or `know` seem to be the most commonly used words in the songs of our data set. Moreover words which are tied to a emotion such as `love` and `want` also seem to be commonly used. On the other hand, words such as `style`, `fade`, `trust` seem to be the least commonly used words in our data set. Surprisingly, some "emotional" words such as `fun`, `pain` are also included in this group. 
+
+# Model Building
+
+## Training/Testing/Validation Data
+
+To remain consistent across all models we decide to split the data along Training/Testing/Validation subsets each containing $60\%/20\%/20\%$ of the the data respectively. Moreover, in order for our data to remain consistent we set seed to 10. 
+
+```{r, split data, echo = FALSE}
+df$explicit <- as.factor(df$explicit)
+df$song_type <- as.factor(df$song_type)
+df$is_pop <- as.factor(df$is_pop)
+df$key <- as.factor(df$key)
+df$time_signature <- as.factor(df$time_signature)
+X <- df %>% select(-c('song_id', 'song_name', 'popularity', 'is_pop'))
+y.num <- df$popularity
+y.bin <- as.integer(df$is_pop) - 1
+
+# Split the data:
+N <- nrow(df)
+n1 <- floor(0.6 * N)
+n2 <- floor(0.2 * N)
+
+set.seed(10)
+
+# Split data to three portions of 0.6, 0.2 and 0.2 of data size N
+idx_train <- sample(N, n1)
+idx_no_train <- (which(!seq(1:N) %in% idx_train))
+idx_test <- sample(idx_no_train, n2)
+idx_val <- which(!idx_no_train %in% idx_test)
+
+X.train <- X[idx_train,]
+X.test <- X[idx_test,]
+X.val <- X[idx_val,]
+
+y.num.train <- y.num[idx_train]
+y.num.test <- y.num[idx_test]
+y.num.val <- y.num[idx_val]
+
+y.bin.train <- y.bin[idx_train]
+y.bin.test <- y.bin[idx_test]
+y.bin.val <- y.bin[idx_val]
+```
+
+## Linear Regression
+
+To start our analysis, we first attempted to model the continuous response variable `popularity` via a linear regression model on all variables, including lyrics. To do this, we first perform LASSO regression to find an ideal subset of features to use. We choose the optimal regularization parameter via cross-validation. In running LASSO regression, we choose $\alpha=0.99$ (to incorporate a small amount of ridge regression) and $nfolds = 10$.
+
+The resulting Mean-Squared Error vs Tuning Parameter plot is given below:
+
+```{r, linear regression, echo = FALSE}
+# Prepare training data
+df.num.train <- as.data.frame(cbind(X.train, y.num.train))
+X.num.train <- sparse.model.matrix(y.num.train ~ ., data = df.num.train)
+
+# Perform LASSO CV
+set.seed(10)
+fit.lasso.num <- cv.glmnet(X.num.train, y.num.train, alpha=.99)
+plot(fit.lasso.num)
+```
+
+We then choose the linear model resulting from lambda.1se, which gives us a smaller model. The summary of the model is as follows:
+
+```{r, get names linear, echo = FALSE}
+coef <- coef(fit.lasso.num, s='lambda.1se')  
+coef <- coef[which(coef != 0),]
+names.coef <- rownames(as.matrix(coef))[-1]
+#names.coef
+```
+
+```{r, fit linear model, echo = FALSE}
+sel_cols <- c(names.coef[-which(names.coef %in% c('explicit1', 'song_typeSolo'))], 'explicit', 'song_type', 'y.num.train')
+#print(sel_cols)
+data_sub <- df.num.train[sel_cols]
+
+fit1 <- glm(y.num.train ~ ., data = data_sub)
+summary(fit1)
+```
+
+We note the following from our results:
+
+* `year` is significantly positively correlated with `popularity`, i.e., more recent songs tend to more “popular.” This makes sense since the Spotify popularity algorithm favors songs that were more recently played. (note that `popularity` is calculated from the number of times a song is played in Spotify)
+* Other characteristics significantly associated with songs with higher `popularity` include having longer duration, being louder, having explicit lyrics, and involving a single artist.
+* Characteristics significantly associated with songs with lower `popularity` include having a major modality, being more instrumental, and being recorded with an audience.
+* For most words, word frequencies are negatively correlated with `popularity`, although the correlation is usually not significant. The most significantly correlated words include “wit” (negative) and “ass” (negative, which goes against our finding that songs with explicit songs tend to have a higher score).
+
+```{r, plot qq and res, echo=FALSE, message=FALSE}
+plot(fit1, 1)
+plot(fit1, 2)
+```
+
+Looking at the QQ plot, we see that the tails do not deviate far from a straight line meaning that the normality assumptions is reasonably well met. On the other hand looking at the residual plot, we see that the residuals are not evenly distributed with respect to the fitted values, suggesting that further analysis may be necessary to reduce heteroskedasticity. On the other hand, the residuals seem to be distributed about the line $y=0$, meaning that the linearity assumption is well met.
+
+## Logistic Regression
+
+For the remainder of our modeling analysis, we will focus on modeling the binary response variable `is_pop` via various classification models. The first such model we consider is logistic regression. We follow a process similar to the one we used for linear regression.
+
+We first perform LASSO logistic regression to find an ideal subset of features to use, choosing the optimal regularization parameter via cross-validation. The resulting Binomial Deviance vs Tunning Parameter is given below:
+
+```{r, glasso fit, echo=FALSE}
+# Prepare training data
+df.bin.train <- as.data.frame(cbind(X.train, y.bin.train))
+X.bin.train <- sparse.model.matrix(y.bin.train ~ ., data = df.bin.train)
+
+# Perform LASSO CV
+set.seed(10)
+fit.lasso.bin <- cv.glmnet(X.bin.train, y.bin.train, alpha=.99, family="binomial")
+plot(fit.lasso.bin)
+```
+
+Again, we choose the linear model resulting from `lambda.1se`. We ultimately end up with 26 features , which are listed in the regression summary below. We then use these features to construct a logistic regression model, whose summary is as follows:
+
+```{r, get coef names, echo=FALSE,message=FALSE}
+coef <- coef(fit.lasso.bin, s='lambda.1se')  
+coef <- coef[which(coef != 0),]
+names.coef <- rownames(as.matrix(coef))[-1]
+#names.coef
+```
+
+```{r, fit glm, message=FALSE, echo=FALSE}
+sel_cols <- c(names.coef[-which(names.coef %in% c('explicit1', 'time_signature4', 'time_signature1'))], 'explicit', 'time_signature', 'y.bin.train')
+#print(sel_cols)
+data_sub <- df.bin.train[sel_cols]
+
+fit2 <- glm(y.bin.train ~ ., family = binomial, data = data_sub)
+summary(fit2)
+```
+
+We note the following:
+
+* Unlike `popularity`, the response variable `is_pop` is in this case significantly negatively correlated with `year`, i.e., younger songs tend to be “not popular.” This somewhat makes sense, since `is_pop` is determined based a song’s chart position across different years, and there is no specific weight that favors more recent songs.
+* Characteristics significantly associated with “popular” songs include being danceable, which is consistent with our beliefs. (`danceability` is the only non-text feature with a positive coefficient and p-value below 0.01.)
+* Characteristics significantly associated with “not popular” songs include being more instrumental and involving more spoken words.
+* Like `popularity`, the response variable `is_pop` is negatively correlated with most words’ frequencies, although the correlation is usually not significant. The two most significantly correlated words are `babi` (positive) and `gonna` (positive). (Surprisingly, these both have positive coefficients.)
+* Unlike our previous linear regression model, we find in this model that `valence`, and `explicit` are not significant predictors.
+
+We present the ROC curve for the model:
+
+```{r, roc curve, echo=FALSE, message=FALSE}
+y.bin.test.prob <- predict.glm(fit2, X.test, type = 'response')
+
+fit.roc <- roc(y.bin.test, y.bin.test.prob, plot=T, col="blue")
+#print(names(fit.roc))
+print(fit.roc$auc)
+```
+
+The ROC curve is very close to being a straight line and corresponds to an AUC of 0.5706, suggesting that our model is not well suited for predicting the popularity of a song. 
+
+## Neural Network
+
+Given that we have about 500 word variables in our data set, we assumed that a neural network model would be a good choice for predicting a songs popularity. For our analyses we used the following network architecture:
+
+```{r, create model, echo = FALSE}
+p <- dim(X.bin.train)[2] # number of input variables
+model <- keras_model_sequential() %>%
+  layer_dense(units = 16, activation = "relu", input_shape = c(p)) %>% 
+  layer_dense(units = 8, activation = "relu") %>% 
+  layer_dense(units = 2, activation = "softmax") # output
+
+print(model)
+```
+
+As can be seen our model has two hidden layers of 32 and 8 nodes, and an output layer of 2 nodes. We use the `relu` activation function for our inner layers and `softmax` for our output one. In total our model has 8714 different params. 
+
+```{r, compile model, echo = FALSE}
+model %>% compile(
+  optimizer = "rmsprop",
+  loss = "sparse_categorical_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+We train our model using 20 epochs and batch sizes of 256. The resulting loss and accuracy plots vs epoch are given below:
+
+```{r, get fit, echo=FALSE, message=FALSE}
+set.seed(1)
+fit1 <- model %>% fit(
+  X.bin.train,
+  y.bin.train,
+  epochs = 20, #20 in the lecture. I tried larger epochs
+  batch_size = 256,
+  validation_split = .15 # set 15% of the data  as the validation data
+)
+
+plot(fit1)
+```
+
+Clearly the results from the neural network seem to be severely wrong. In fact what seems to happen is that as our model is being trained, it "switches" back and forth from predicting that all songs are popular to predicting that none are popular. The validation accuracy changes from $60\%$ to $40\%$ which is roughly the split between unpopular and popular songs.
+
+Since similar results seem to be the case for many different neural network architectures (not shown) we are left to conclude that a neural network is not able to predict a songs popularity with the given features in our data set. The fact that we only chose words with frequencies of greater than $5\%$ (and thus could have constrained the number of words far too greatly) could have played a role in the failure of the neural network model. 
+
+## Random Forest
+
+The next and final model in our analysis is a Random Forest model. Since we are using some $500$ different variables in this model, we set $mtry=\sqrt{534}=\approx 23$. Moreover we set the number of trees for bagging to $500$ and get the resulting plot of OOB MSE vs number of trees:
+
+```{r, create random forest, echo=FALSE}
+set.seed(1)
+data <- as.data.frame(cbind(X.train, y.bin.train))
+data$y.bin.train <- as.factor(y.bin.train)
+#data$y.bin.train
+N <- nrow(data)
+data_sub <- data[sample(seq_len(N), size=2000),]
+
+fit.rf <- randomForest(y.bin.train~., data_sub, mtry = 23, ntree = 500)
+```
+
+```{r, plot OOB MSE vs num trees, echo=FALSE}
+plot(fit.rf)
+legend("topright", colnames(fit.rf$err.rate), col=1:3, cex=0.8, fill=1:3)
+```
+
+It seems that the OOB MSE error seems to settle down when the number of trees is 200. 
+
+We now plot the ROC curve of our model:
+
+```{r, create final random forest, echo=FALSE, message=FALSE}
+fit3 <- randomForest(y.bin.train~., data_sub, mtry = 23, ntree = 200)
+```
+
+```{r, get roc curve, echo=FALSE, message=FALSE}
+test_data <- as.data.frame(cbind(X.test, y.bin.test))
+predict.rf.y <- predict(fit3, newdata = test_data) # labels
+predict.rf <- predict(fit3, newdata=test_data, type="prob") #probabilities
+# Testing errors
+set.seed(1)
+rf.test.err <- mean(test_data$y.bin.test != predict.rf.y) # didn't set a seed to split the train/test
+#rf.test.err
+# Testing ROC curve
+roc(test_data$y.bin.test, predict.rf[,2], plot=TRUE) 
+```
+
+We see that the resulting ROC curve close to the $y=x$ line and obtain an AUC of 0.55. This suggests that the model's predictive power is not ideal.
+
+# Final Model
+
+To find the best model for prediction, we first determine a suitable metric for comparison. We do not believe that accuracy of the given models would be a good predictor of the model itself, since not all misclassifications are equal. In particular, we believe that false positives (i.e., non-popular songs predicted to be popular) are less acceptable than false negatives (i.e., popular songs predicted to be non-popular). Thus, we define the following weighted misclassification error (WMCE)
+$$WMCE=\frac{a_{1,0} \sum_{i=1}^n 1 \{\hat{y}_i = 0 | y_i=1\} + a_{0,1} \sum_{i=1}^n 1 \{\hat{y}_i = 1 | y_i=0\}}{n}$$
+where we choose $a_{1,0}/a_{0,1}=0.2$ (i.e., false positives are five times worse than false negatives). Calculating this $WMCE$ for our logistic regression and random forest classification models yields WMCEs of $0.0948$ and $0.126$, respectively. (We ignore the model resulting from (1) linear regression, as classification is not applicable, and (2) neural network, due to the aforementioned performance-based reasons.) Based on this metric, the logistic regression model appears the better model to go with for this context.
+
+```{r, weighted MCE, echo=FALSE, eval=FALSE}
+wmce <- function(y_true, y_pred, c) {  
+  (c*sum(y_pred[y_true == 1] != 1) + sum(y_pred[y_true == 0] != 0))/length(y_true)  
+}
+y_prob <- predict(fit2, newdata = as.data.frame(X.test), type='response')
+y_pred <- ifelse(y_prob > 0.5, 1, 0)
+wmce(y.bin.test, y_pred, .2)
+
+y_pred <- predict(fit3, test_data, type="response") # majority vote
+wmce(test_data$y.bin.test, y_pred, .2)
+```
+
+# Discussion
+
+## Issues and Limitations
+
+We would like to note a few limitations regarding our project. First, we experienced some computational difficulties with certain aspects of the project. For example, the hyperparameter tuning for the random forest model was computationally demanding, so we eventually performed this tuning with only a small subset (~10%) of the data to improve runtime. However, we tried to use all of the data in situations where it was possible to perform computations in a reasonable amount of time.
+
+Second, with computational efficiency in mind, the MusicODataset itself included around 20,000 songs, which is only a small subset of songs available through the Spotify Web API. We could have incorporated more songs into our analysis, although we would not be able to use the `is_pop` response for those songs, since that was computed in the MusicOSet project. In addition, this could have presented more computational challenges.
+
+Finally, our classification models were generally poor at prediction, which suggests that our current set of predictors (i.e., most of the ones included in the MusicODatset) is not effective. We did set the frequency threshold for word frequencies at 5%, and we could have expanded our set of lyrical features by lowering this threshold, although this could also increase computational runtime. In general, predicting `is_pop` using this dataset may be an inherently difficult task.
+
+## Conclusion
+
+We find that, from the MusicODataset, it is difficult to construct an effective model for prediction. While a logistic regression model seemed to perform best, given that it had an AUC below $0.6$, this model still does not seem to be sufficient for prediction.
+
+Despite these shortcomings, we gained some useful descriptive insights our regression analysis. We found some features to be significantly correlated with either `is_pop` (chart-based popularity) or `popularity` (play-based popularity). In particular, we find that the set of significant features for `is_pop` is mostly different from that for `popularity`. In additions, features such as year seem to have differing effects based on the response variable, making it difficult to draw any concrete conclusions. Overall, even though our models have room for improvement in their predictive power, they still yield some meaningful descriptive results regarding the effects of certain features and words on song popularity. 
+
+# References
+
+Silva, M. O., Rocha, L. M., & Moro, M. M. (2019). MusicOSet: An Enhanced Music Dataset for Music Data Mining. MusicOSet. Retrieved 2023, from https://marianaossilva.github.io/DSW2019/assets/data/paper.pdf 
